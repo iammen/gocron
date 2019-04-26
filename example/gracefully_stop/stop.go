@@ -14,14 +14,20 @@ func task() {
 }
 
 func taskWithParams(a int, b string) {
-	fmt.Println(a, b)
+	fmt.Printf("a = %d, b = %s : %v\n", a, b, time.Now().Format("2006-01-02 15:04:05"))
+}
+
+func longRunningTask() {
+	fmt.Printf("Long runnning task running: %v\n", time.Now().Format("2006-01-02 15:04:05"))
+	time.Sleep(5 * time.Second)
 }
 
 func main() {
 	// Start all jobs.
 	s := gocron.NewScheduler()
 	s.Every().Minute().Do(taskWithParams, 1, "hello")
-	s.Every(5).Seconds().Do(task)
+	s.Every().Second().Do(task)
+	s.Every(2).Seconds().Do(longRunningTask)
 	stopped := s.Start()
 
 	// Wait for interrupt signal to gracefully stop all jobs.

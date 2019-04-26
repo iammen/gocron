@@ -357,7 +357,7 @@ func (j *Job) shouldRun() bool {
 	j.mu.Lock()
 	b := time.Now().After(j.nextRun)
 	j.mu.Unlock()
-	return b
+	return b && !j.running
 }
 
 // Scheduler struct, the only data member is the list of jobs.
