@@ -52,16 +52,16 @@ const (
 // Job struct keeping information about job
 type Job struct {
 	mu         *sync.Mutex                // A mutex to safely access data across multiple goroutines
-	interval   uint64                     // pause interval * unit bettween runs
-	jobFunc    string                     // the job jobFunc to run, func[jobFunc]
-	unit       string                     // time units, ,e.g. 'minutes', 'hours'...
-	atTime     time.Duration              // optional time at which this job runs
-	lastRun    time.Time                  // datetime of last run
-	nextRun    time.Time                  // datetime of next run
+	interval   uint64                     // Pause interval * unit bettween runs
+	jobFunc    string                     // The job jobFunc to run, func[jobFunc]
+	unit       string                     // Time units, ,e.g. 'minutes', 'hours'...
+	atTime     time.Duration              // Optional time at which this job runs
+	lastRun    time.Time                  // Datetime of last run
+	nextRun    time.Time                  // Datetime of next run
 	startDay   time.Weekday               // Specific day of the week to start on
 	funcs      map[string]interface{}     // Map for the function task store
 	fparams    map[string]([]interface{}) // Map for function and  params of function
-	isRunning  bool                       // indicates that job is running
+	isRunning  bool                       // Indicates that job is running
 	err        error                      // Error
 	lastResult *JobResult                 // Last job result
 }
@@ -388,7 +388,7 @@ type Scheduler struct {
 	err        error
 	clear      bool
 	mu         *sync.Mutex     // A Mutex exclusion lock
-	workers    int             // Number of workers in pool
+	workers    int             // Number of the workers in pool
 	jobs       []*Job          // Slice store jobs
 	quit       chan struct{}   // Quit channel
 	isQuit     bool            // Indicates that the scheduler is quit
