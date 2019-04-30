@@ -51,34 +51,42 @@ const (
 
 // Job struct keeping information about job
 type Job struct {
-	mu       *sync.Mutex
-	interval uint64                     // pause interval * unit bettween runs
-	jobFunc  string                     // the job jobFunc to run, func[jobFunc]
-	unit     string                     // time units, ,e.g. 'minutes', 'hours'...
-	atTime   time.Duration              // optional time at which this job runs
-	lastRun  time.Time                  // datetime of last run
-	nextRun  time.Time                  // datetime of next run
-	startDay time.Weekday               // Specific day of the week to start on
-	funcs    map[string]interface{}     // Map for the function task store
-	fparams  map[string]([]interface{}) // Map for function and  params of function
-	running  bool                       // indicates that job is running
-	err      error                      // Error
+	mu         *sync.Mutex                // A mutex to safely access data across multiple goroutines
+	interval   uint64                     // pause interval * unit bettween runs
+	jobFunc    string                     // the job jobFunc to run, func[jobFunc]
+	unit       string                     // time units, ,e.g. 'minutes', 'hours'...
+	atTime     time.Duration              // optional time at which this job runs
+	lastRun    time.Time                  // datetime of last run
+	nextRun    time.Time                  // datetime of next run
+	startDay   time.Weekday               // Specific day of the week to start on
+	funcs      map[string]interface{}     // Map for the function task store
+	fparams    map[string]([]interface{}) // Map for function and  params of function
+	isRunning  bool                       // indicates that job is running
+	err        error                      // Error
+	lastResult *JobResult                 // Last job result
+}
+
+// JobResult struct.
+type JobResult struct {
+	result []reflect.Value
+	err    error
 }
 
 // NewJob creates a new job with the time interval.
 func NewJob(interval uint64) *Job {
 	return &Job{
-		mu:       new(sync.Mutex),
-		interval: interval,
-		jobFunc:  "",
-		unit:     "",
-		atTime:   0,
-		lastRun:  time.Unix(0, 0),
-		nextRun:  time.Unix(0, 0),
-		startDay: time.Sunday,
-		funcs:    make(map[string]interface{}),
-		fparams:  make(map[string]([]interface{})),
-		running:  false,
+		mu:         new(sync.Mutex),
+		interval:   interval,
+		jobFunc:    "",
+		unit:       "",
+		atTime:     0,
+		lastRun:    time.Unix(0, 0),
+		nextRun:    time.Unix(0, 0),
+		startDay:   time.Sunday,
+		funcs:      make(map[string]interface{}),
+		fparams:    make(map[string]([]interface{})),
+		isRunning:  false,
+		lastResult: &JobResult{},
 	}
 }
 
@@ -115,11 +123,6 @@ func (j *Job) Do(jobFun interface{}, params ...interface{}) error {
 	j.mu.Unlock()
 
 	j.scheduleNextRun()
-
-	// Run a job immediately by default.
-	// j.mu.Lock()
-	// j.nextRun = time.Now()
-	// j.mu.Unlock()
 
 	return nil
 }
@@ -260,11 +263,16 @@ func (j *Job) roundToMidnight(t time.Time) time.Time {
 }
 
 // Run the job and immdiately reschedule it
-func (j *Job) run() ([]reflect.Value, error) {
+func (j *Job) run(results chan<- *JobResult) {
 	f := reflect.ValueOf(j.funcs[j.jobFunc])
 	params := j.fparams[j.jobFunc]
 	if len(params) != f.Type().NumIn() {
-		return nil, ErrParamsNotAdapted
+		j.mu.Lock()
+		j.lastResult.result = nil
+		j.lastResult.err = ErrParamsNotAdapted
+		j.isRunning = false
+		j.mu.Unlock()
+		results <- j.lastResult
 	}
 
 	var result []reflect.Value
@@ -272,7 +280,12 @@ func (j *Job) run() ([]reflect.Value, error) {
 	for k, param := range params {
 		// should check for nil items to avoid a panic
 		if param == nil {
-			return nil, ErrParameterCannotBeNil
+			j.mu.Lock()
+			j.lastResult.result = nil
+			j.lastResult.err = ErrParameterCannotBeNil
+			j.isRunning = false
+			j.mu.Unlock()
+			results <- j.lastResult
 		}
 		in[k] = reflect.ValueOf(param)
 	}
@@ -281,17 +294,27 @@ func (j *Job) run() ([]reflect.Value, error) {
 	// For fix issue: https://github.com/jasonlvhit/gocron/pull/57
 	j.mu.Lock()
 	j.lastRun = time.Now()
-	j.running = true
+	j.isRunning = true
 	j.mu.Unlock()
 
 	result = f.Call(in)
 
 	err := j.scheduleNextRun()
 	if err != nil {
-		return result, err
+		j.mu.Lock()
+		j.lastResult.result = nil
+		j.lastResult.err = err
+		j.isRunning = false
+		j.mu.Unlock()
+		results <- j.lastResult
 	}
 
-	return result, nil
+	j.mu.Lock()
+	j.lastResult.result = result
+	j.lastResult.err = nil
+	j.isRunning = false
+	j.mu.Unlock()
+	results <- j.lastResult
 }
 
 // scheduleNextRun computes the instant when this job should run next
@@ -308,7 +331,7 @@ func (j *Job) scheduleNextRun() error {
 		j.mu.Lock()
 		j.nextRun = j.roundToMidnight(j.lastRun)
 		j.nextRun = j.nextRun.Add(j.atTime)
-		j.running = false
+		j.isRunning = false
 		j.mu.Unlock()
 	case weeks:
 		j.mu.Lock()
@@ -319,12 +342,12 @@ func (j *Job) scheduleNextRun() error {
 			j.nextRun = j.nextRun.Add(time.Duration(dayDiff) * 24 * time.Hour)
 		}
 		j.nextRun = j.nextRun.Add(j.atTime)
-		j.running = false
+		j.isRunning = false
 		j.mu.Unlock()
 	default:
 		j.mu.Lock()
 		j.nextRun = j.lastRun
-		j.running = false
+		j.isRunning = false
 		j.mu.Unlock()
 	}
 
@@ -337,7 +360,7 @@ func (j *Job) scheduleNextRun() error {
 	for j.nextRun.Before(now) || j.nextRun.Before(j.lastRun) || j.nextRun.Equal(now) {
 		j.mu.Lock()
 		j.nextRun = j.nextRun.Add(period)
-		j.running = false
+		j.isRunning = false
 		j.mu.Unlock()
 	}
 
@@ -357,20 +380,29 @@ func (j *Job) shouldRun() bool {
 	j.mu.Lock()
 	b := time.Now().After(j.nextRun)
 	j.mu.Unlock()
-	return b && !j.running
+	return b && !j.isRunning
 }
 
 // Scheduler struct, the only data member is the list of jobs.
 type Scheduler struct {
-	err   error
-	clear bool
-	mu    *sync.Mutex // A Mutex exclusion lock
-	jobs  []*Job      // Slice store jobs
+	err        error
+	clear      bool
+	mu         *sync.Mutex     // A Mutex exclusion lock
+	workers    int             // Number of workers in pool
+	jobs       []*Job          // Slice store jobs
+	quit       chan struct{}   // Quit channel
+	isQuit     bool            // Indicates that the scheduler is quit
+	jobQueues  chan *Job       // The buffered channel that use to pass the running job to the worker.
+	jobResults chan *JobResult // The buffered channel that use to pass the job results
 }
 
 // NewScheduler creates a new scheduler
 func NewScheduler() *Scheduler {
-	return &Scheduler{mu: new(sync.Mutex), jobs: []*Job{}}
+	return &Scheduler{
+		mu:     new(sync.Mutex),
+		jobs:   []*Job{},
+		isQuit: false,
+	}
 }
 
 // Implements the sort.Interface{} for sorting jobs, by the time nextRun
@@ -411,6 +443,7 @@ func (s *Scheduler) Every(intervals ...uint64) *Job {
 	job := NewJob(intervals[0])
 	s.mu.Lock()
 	s.jobs = append(s.jobs, job)
+	s.workers = len(s.jobs)
 	s.mu.Unlock()
 	return job
 }
@@ -441,13 +474,7 @@ func (s *Scheduler) RunPending() error {
 
 	runnableJobs, n := s.getRunnableJobs()
 	for i := 0; i < n; i++ {
-		s.mu.Lock()
-		_, err := runnableJobs[i].run()
-		s.mu.Unlock()
-
-		if err != nil {
-			return err
-		}
+		s.jobQueues <- runnableJobs[i]
 	}
 
 	return nil
@@ -461,7 +488,7 @@ func (s *Scheduler) RunAll() {
 // RunAllwithDelay runs all jobs with delay seconds
 func (s *Scheduler) RunAllwithDelay(d int) {
 	for i := 0; i < len(s.jobs); i++ {
-		s.jobs[i].run()
+		s.jobQueues <- s.jobs[i]
 		if 0 != d {
 			time.Sleep(time.Duration(d))
 		}
@@ -485,9 +512,16 @@ func (s *Scheduler) Remove(j interface{}) {
 
 // Start all the pending jobs
 // Add seconds ticker
-func (s *Scheduler) Start() chan struct{} {
-	done := make(chan struct{}, 1)
+func (s *Scheduler) Start() {
+	s.quit = make(chan struct{}, 1)
+	s.jobQueues = make(chan *Job, s.workers)
+	s.jobResults = make(chan *JobResult, s.workers)
 	ticker := time.NewTicker(100 * time.Millisecond)
+
+	// Create worker pool.
+	for wid := 1; wid <= s.workers; wid++ {
+		go s.runJob(wid, s.jobQueues, s.jobResults)
+	}
 
 	go func() {
 		defer ticker.Stop()
@@ -500,39 +534,53 @@ func (s *Scheduler) Start() chan struct{} {
 					s.err = err
 					return
 				}
-			case _, ok := <-done:
-				// Close done channel if it still open.
+			case r, ok := <-s.jobResults:
+				if ok && r.err != nil {
+					fmt.Printf("An error occurs: %s", r.err.Error())
+				}
+			case _, ok := <-s.quit:
+				// Close quit channel if it still open.
 				if ok {
-					close(done)
+					close(s.quit)
 				}
 				return
 			}
 		}
 	}()
 
-	return done
+	return
 }
 
-// Stop gracfually stop all runnable jobs.
-func (s *Scheduler) Stop(done chan struct{}) error {
-	// TODO: Send signal to scheduler to not generate next run.
+// Quit gracfually stop the scheduler.
+func (s *Scheduler) Quit() {
+	// Send signal to scheduler to not generate next run.
+	s.mu.Lock()
+	s.isQuit = true
+	s.mu.Unlock()
 
-	// TODO: Get all running jobs.
+	// Wait until the job queues is empty.
+	for {
+		jobs := s.getRunningJobs()
+		if jobs == 0 {
+			break
+		}
 
-	// TODO: Waiting for all running jobs to stop.
+		fmt.Printf("Wait for %d jobs to finish before exiting.\n", jobs)
+		time.Sleep(2 * time.Second)
+	}
 
-	// Send an empty struct to done channel to leave.
-	done <- struct{}{}
-	time.Sleep(5 * time.Second)
+	// Send an empty struct to quit channel to leave.
+	s.quit <- struct{}{}
+	time.Sleep(time.Second)
 
 	if err := s.Err(); err != nil {
-		return fmt.Errorf("Error occurs: %v", err)
+		s.err = fmt.Errorf("Error occurs: %v", err)
 	}
 
 	s.Clear()
 	fmt.Printf("All jobs has stopped.")
 
-	return nil
+	return
 }
 
 // Get the current runnable jobs, which shouldRun is True
@@ -540,12 +588,30 @@ func (s *Scheduler) getRunnableJobs() ([]*Job, int) {
 	var runnableJobs []*Job
 	sort.Sort(s)
 	for i := 0; i < len(s.jobs); i++ {
-		if !s.jobs[i].shouldRun() {
-			break
+		if s.jobs[i].shouldRun() && !s.isQuit {
+			runnableJobs = append(runnableJobs, s.jobs[i])
 		}
-		runnableJobs = append(runnableJobs, s.jobs[i])
 	}
 	return runnableJobs, len(runnableJobs)
+}
+
+// Get the running jobs
+func (s *Scheduler) getRunningJobs() int {
+	running := 0
+	for i := 0; i < len(s.jobs); i++ {
+		if s.jobs[i].isRunning {
+			running++
+		}
+	}
+
+	return running
+}
+
+// runJob runs the job that received from the job queue channel.
+func (s *Scheduler) runJob(wid int, jobs <-chan *Job, results chan<- *JobResult) {
+	for j := range jobs {
+		j.run(results)
+	}
 }
 
 // The following methods are shortcuts for not having to
@@ -582,6 +648,12 @@ func NextRun() (job *Job, time time.Time) {
 	return defaultScheduler.NextRun()
 }
 
+// Quit graceful stop the scheduler.
+func Quit() {
+	defaultScheduler.Quit()
+	return
+}
+
 // Remove specific job
 func Remove(j interface{}) {
 	defaultScheduler.Remove(j)
@@ -611,8 +683,8 @@ func RunPending() {
 }
 
 // Start run all jobs that are scheduled to run
-func Start() chan struct{} {
-	return defaultScheduler.Start()
+func Start() {
+	defaultScheduler.Start()
 }
 
 // for given function fn , get the name of funciton.

@@ -23,9 +23,9 @@ func assertEqualTime(name string, t *testing.T, actual, expected time.Time) {
 func TestSecond(t *testing.T) {
 	defaultScheduler.Every().Second().Do(task)
 	defaultScheduler.Every().Second().Do(taskWithParams, 1, "hello")
-	stop := defaultScheduler.Start()
+	defaultScheduler.Start()
 	time.Sleep(2 * time.Second)
-	close(stop)
+	defaultScheduler.Quit()
 
 	if err := defaultScheduler.Err(); err != nil {
 		t.Error(err)
@@ -134,9 +134,9 @@ func TestTaskAt(t *testing.T) {
 	dayJob.scheduleNextRun()
 	assertEqualTime("first run", t, startTime, dayJob.nextRun)
 
-	sStop := s.Start()      // Start scheduler
+	s.Start()               // Start scheduler
 	<-dayJobDone            // Wait job done
-	close(sStop)            // Stop scheduler
+	s.Quit()                // Stop scheduler
 	time.Sleep(time.Second) // wait for scheduler to reschedule job
 
 	// Check next run

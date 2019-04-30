@@ -44,11 +44,11 @@ func main() {
 	// gocron.Clear()
 
 	// function Start start all the pending jobs
-	<-gocron.Start()
+	gocron.Start()
 
 	// also , you can create a your new scheduler,
 	// to run two scheduler concurrently
 	s := gocron.NewScheduler()
 	s.Every(3).Seconds().Do(task)
-	<-s.Start()
+	s.Start()
 }

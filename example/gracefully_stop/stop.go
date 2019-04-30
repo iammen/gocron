@@ -18,17 +18,18 @@ func taskWithParams(a int, b string) {
 }
 
 func longRunningTask() {
-	fmt.Printf("Long runnning task running: %v\n", time.Now().Format("2006-01-02 15:04:05"))
-	time.Sleep(5 * time.Second)
+	fmt.Printf("Long runnning task start: %v\n", time.Now().Format("2006-01-02 15:04:05"))
+	time.Sleep(3 * time.Second)
+	fmt.Printf("Long runnning task stop: %v\n", time.Now().Format("2006-01-02 15:04:05"))
 }
 
 func main() {
 	// Start all jobs.
 	s := gocron.NewScheduler()
-	s.Every().Minute().Do(taskWithParams, 1, "hello")
+	s.Every(2).Seconds().Do(taskWithParams, 1, "hello")
 	s.Every().Second().Do(task)
-	s.Every(2).Seconds().Do(longRunningTask)
-	stopped := s.Start()
+	s.Every(5).Seconds().Do(longRunningTask)
+	s.Start()
 
 	// Wait for interrupt signal to gracefully stop all jobs.
 	quit := make(chan os.Signal)
@@ -38,9 +39,5 @@ func main() {
 	fmt.Printf("Please wait a moment.\n")
 
 	// Gracefully stop all running jobs.
-	// stopped <- struct{}{}
-	// close(stopped)
-	// time.Sleep(2 * time.Second)
-
-	defer s.Stop(stopped)
+	s.Quit()
 }
